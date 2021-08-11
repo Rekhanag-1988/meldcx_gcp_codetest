@@ -1,0 +1,18 @@
+---
+imports:
+  - path: jinja/codetest.jinja
+  - path: cicd_startup_script.sh
+
+resources:
+  - name: cicd-vpc
+    type: jinja/codetest.jinja
+    properties:
+      vpc_type: "cicd"
+      subnetworks:
+        region: "australia-southeast2"
+        description: "Subnet hosting cicd server"
+        cidr_range: "10.20.40.0/28"
+        zone: "australia-southeast2-a"
+      cicd_startup_script: cicd_startup_script.sh
+  
+

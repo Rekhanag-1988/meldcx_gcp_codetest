@@ -1,0 +1,163 @@
+---
+resources:
+- name: codetest-{{ properties['vpc_type'] }}-vpc
+  type: compute.v1.network
+  properties:
+    name: codetest-{{ properties['vpc_type'] }}-vpc
+    description: Application VPC
+    autoCreateSubnetworks: false
+
+- name: codetest-{{ properties['vpc_type'] }}-subnet
+  type: compute.v1.subnetwork
+  properties:
+    description: {{ properties['subnetworks']['description'] }}
+    network: $(ref.codetest-{{ properties['vpc_type'] }}-vpc.selfLink)
+    ipCidrRange: {{ properties['subnetworks']['cidr_range'] }}
+    region: {{ properties['subnetworks']['region'] }}
+    privateIpGoogleAccess: true
+
+- name: codetest-{{ properties['vpc_type'] }}-vm
+  type: compute.v1.instance
+  properties:
+    zone: {{ properties['subnetworks']['zone'] }}
+    tags: 
+      items:
+      - {% if properties['vpc_type'] == 'application' %} frontend-vm {% else %} cicd-vm {% endif %}
+    machineType: https://www.googleapis.com/compute/v1/projects/{{ env['project'] }}/zones/{{ properties['subnetworks']['zone'] }}/machineTypes/n1-standard-1
+    metadata:
+      items:
+        {% if properties['vpc_type'] == 'application' %}
+        - key: gce-container-declaration
+          value: |
+            {{ imports[properties['app_container_spec']]|indent(12) }}
+        {% else %}
+        - key: startup-script
+          value: |
+            {{ imports[properties['cicd_startup_script']]|indent(12) }}
+        {% endif %}
+    disks:
+    - deviceName: boot
+      type: PERSISTENT
+      boot: true
+      autoDelete: true
+      initializeParams:
+        sourceImage: {% if properties['vpc_type'] == 'application' %} https://www.googleapis.com/compute/v1/projects/cos-cloud/global/images/family/cos-stable {% else %} https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1804-bionic-v20210720 {% endif %}
+    networkInterfaces:
+    - network: $(ref.codetest-{{ properties['vpc_type'] }}-vpc.selfLink)
+      subnetwork: $(ref.codetest-{{ properties['vpc_type'] }}-subnet.selfLink)
+    serviceAccounts:
+      - email: default
+        scopes:
+          - "https://www.googleapis.com/auth/cloud-platform"
+
+{% if properties['vpc_type'] == 'application' %}
+
+- name: codetest-{{ properties['vpc_type'] }}-instance-group
+  type: compute.v1.instanceGroup
+  properties:
+    zone: {{ properties['subnetworks']['zone'] }}
+    network: $(ref.codetest-{{ properties['vpc_type'] }}-vpc.selfLink)
+    subnetwork: $(ref.codetest-{{ properties['vpc_type'] }}-subnet.selfLink)
+   
+
+- name: codetest-{{ properties['vpc_type'] }}-add-instances-to-ig
+  action: gcp-types/compute-v1:compute.instanceGroups.addInstances
+  properties:
+    project: {{ env['project'] }}
+    zone: {{ properties['subnetworks']['zone'] }}
+    instanceGroup: $(ref.codetest-{{ properties['vpc_type'] }}-instance-group.name)
+    instances:
+      - instance: projects/{{ env['project'] }}/zones/{{ properties['subnetworks']['zone'] }}/instances/codetest-{{ properties['vpc_type'] }}-vm
+
+- name: codetest-{{ properties['vpc_type'] }}-health-check
+  type: compute.v1.httpHealthCheck
+  properties:
+    port: 80
+    requestPath: {{ properties["healthcheck_path"] }}
+    checkIntervalSec: 5
+    timeoutSec: 5
+    healthyThreshold: 1
+    unhealthyThreshold: 3
+
+- name: codetest-{{ properties['vpc_type'] }}-backend-service
+  type: compute.v1.backendService
+  properties:
+    backends:
+      - group: $(ref.codetest-{{ properties['vpc_type'] }}-instance-group.selfLink)
+    healthChecks:
+      - $(ref.codetest-{{ properties['vpc_type'] }}-health-check.selfLink)
+    port: 80
+    portName: http
+    protocol: HTTP
+
+- name: codetest-{{ properties['vpc_type'] }}-elb-firewall
+  type: compute.v1.firewall
+  properties:
+    network: $(ref.codetest-{{ properties['vpc_type'] }}-vpc.selfLink)
+    sourceRanges:
+      - 35.191.0.0/16
+      - 130.211.0.0/22
+    targetTags:
+      - frontend-vm
+    allowed:
+      - IPProtocol: TCP
+        ports: ['80']
+
+- name: codetest-{{ properties['vpc_type'] }}-elb
+  type: compute.v1.urlMap
+  properties:
+    defaultService: $(ref.codetest-{{ properties['vpc_type'] }}-backend-service.selfLink)
+
+- name: codetest-{{ properties['vpc_type'] }}-web-proxy
+  type: compute.v1.targetHttpProxy
+  properties:
+    urlMap: $(ref.codetest-{{ properties['vpc_type'] }}-elb.selfLink)
+    metadata:
+    dependsOn:
+    - codetest-{{ properties['vpc_type'] }}-elb
+
+- name: codetest-{{ properties['vpc_type'] }}-static-ip-address
+  type: compute.v1.globalAddress
+
+- name: codetest-{{ properties['vpc_type'] }}-elb-http-forwarding-rule
+  type: compute.v1.globalForwardingRules
+  properties:
+    IPProtocol: TCP
+    ipVersion: IPV4
+    loadBalancingScheme: EXTERNAL
+    portRange: 80-80
+    region: {{ properties['subnetworks']['region'] }}
+    target: $(ref.codetest-{{ properties['vpc_type'] }}-web-proxy.selfLink)
+
+{% endif %}
+
+- name: codetest-{{ properties['vpc_type'] }}-ssh-firewall
+  type: compute.v1.firewall
+  properties:
+    network: $(ref.codetest-{{ properties['vpc_type'] }}-vpc.selfLink)
+    sourceRanges: ['0.0.0.0/0']
+    targetTags:
+      - frontend-vm
+      - cicd-vm
+    allowed:
+      - IPProtocol: TCP
+        ports: ['22']
+
+{% if properties['vpc_type'] == 'cicd' %}
+- name: codetest-{{ properties['vpc_type'] }}-router
+  type: compute.v1.router
+  properties:
+    network: $(ref.codetest-{{ properties['vpc_type'] }}-vpc.selfLink)
+    region: {{ properties['subnetworks']['region'] }}
+    nats:
+    - name: odetest-{{ properties['vpc_type'] }}-nat
+      natIpAllocateOption: "AUTO_ONLY"
+      sourceSubnetworkIpRangesToNat: "LIST_OF_SUBNETWORKS"
+      subnetworks:
+      - name: $(ref.codetest-{{ properties['vpc_type'] }}-subnet.selfLink)
+        sourceIpRangesToNat: ["PRIMARY_IP_RANGE"]
+{% endif %}
+
+
+
+

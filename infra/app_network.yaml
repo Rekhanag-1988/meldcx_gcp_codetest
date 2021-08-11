@@ -1,0 +1,19 @@
+---
+imports:
+  - path: jinja/codetest.jinja
+  - path: app_container_spec.yaml
+
+resources:
+  - name: app-vpc
+    type: jinja/codetest.jinja
+    properties:
+      vpc_type: "application"
+      subnetworks:
+        region: "australia-southeast2"
+        description: "Subnet hosting webserver"
+        cidr_range: "10.20.30.0/28"
+        zone: "australia-southeast2-a"
+      healthcheck_path: '/index.html'
+      app_container_spec: app_container_spec.yaml
+
+

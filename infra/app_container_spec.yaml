@@ -1,0 +1,10 @@
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-frontend
+spec:
+  containers:
+    - name: nginx-frontend
+      image: gcr.io/avid-life-209322/rekhanag_cv:1.0.0
+      imagePullPolicy: Always
